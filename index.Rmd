@@ -1,0 +1,139 @@
+---
+title: "SVM Model with R"
+author: "Maria Freydlin"
+date: "1/8/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Predictive Modeling 
+
+## Background
+
+### Using devices such as Jawbone Up, Nike FuelBand, and Fitbit it is now possible to collect a large amount of data about personal activity relatively inexpensively. These type of devices are part of the quantified self movement – a group of enthusiasts who take measurements about themselves regularly to improve their health, to find patterns in their behavior, or because they are tech geeks. One thing that people regularly do is quantify how much of a particular activity they do, but they rarely quantify how well they do it. In this project, your goal will be to use data from accelerometers on the belt, forearm, arm, and dumbell of 6 participants. They were asked to perform barbell lifts correctly and incorrectly in 5 different ways. More information is available from the website [here](http://groupware.les.inf.puc-rio.br/har) (see the section on the Weight Lifting Exercise Dataset). 
+
+### The goal of this project is to predict the manner in which they did the exercise. This is the "classe" variable in the training set. 
+
+Load All The Libraries
+
+```{r libraries, warning=FALSE, message=FALSE}
+library(ggplot2)
+library(caret)
+library(imputeTS)
+library(e1071)
+library(gridExtra)
+library(dplyr)
+```
+
+Import the Data
+
+```{r import}
+train_url <- 'https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv'
+test_url <-  'https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv'
+train = read.csv(train_url)
+test = read.csv(test_url)
+train = train[,-1]
+test = test[,-1]
+dim(train)
+```
+
+Impute cvtd_timestamp variable
+
+```{r impute}
+train$cvtd_timestamp = as.POSIXlt(train$cvtd_timestamp, format = '%m/%d/%Y %H:%M')
+test$cvtd_timestamp = as.POSIXlt(test$cvtd_timestamp, format = '%m/%d/%Y %H:%M')
+train$cvtd_timestamp <- as.numeric(train$cvtd_timestamp)
+test$cvtd_timestamp <- as.numeric(test$cvtd_timestamp)
+train$cvtd_timestamp <- na_interpolation(train$cvtd_timestamp)
+test$cvtd_timestamp <- na_interpolation(test$cvtd_timestamp)
+str(train$cvtd_timestamp)
+```
+
+Convert Categorical Values to Factor and remove username column
+
+```{r factor}
+train$new_window = as.factor(train$new_window)
+test$new_window = as.factor(test$new_window)
+train$classe = as.factor(train$classe)
+train = train[,-1]
+test = test[,-1]
+str(train$new_window)
+```
+
+Drop the Columns that contain mostly empty or null values
+
+```{r empty}
+empty = sapply(train[, -4], function(x) mean(x==''))
+empty = sort(empty[empty > 0.5])
+remove_empty = names(empty)
+train = train[, ! names(train) %in% remove_empty]
+test = test[, ! names(test) %in% remove_empty]
+
+nan <-sapply(train[, -4], function(x) mean(is.na(x)))
+nan <-nan[nan > 0.5]
+remove_nan <- names(nan)
+train = train[, !names(train) %in% remove_nan]
+test = test[, !names(test) %in% remove_nan]
+dim(train)
+```
+
+Explore some of the variables visually.
+
+```{r plots}
+g <- ggplot(train, aes(x=factor(classe), y=accel_dumbbell_y)) + 
+        geom_boxplot(aes(fill=new_window)) + theme_bw()
+g2 <- ggplot(train, aes(x=factor(classe), y=magnet_dumbbell_x)) + 
+        geom_boxplot(aes(fill=new_window)) + theme_bw()
+g3 <- ggplot(train, aes(x=factor(classe), y=pitch_dumbbell)) + 
+        geom_boxplot(aes(fill=new_window)) + theme_bw()
+
+
+g4 <- ggplot(train, aes(x=factor(classe), y=magnet_arm_z)) + 
+        geom_boxplot(aes(fill=new_window)) + theme_bw()
+grid.arrange(g, g2, g3,g4, nrow=2, ncol=2)
+```
+
+Preprocess
+
+```{r preprocess}
+#convert new_window into dummy variable
+train$new_window <-ifelse(train$new_window=='yes', 1,0)
+test$new_window <- ifelse(test$new_window=='yes', 1, 0)
+#scale and center the data
+preprocessParams <- preProcess(train[,-58], method=c("center", "scale"))
+train[,-58] <- predict(preprocessParams, train[,-58])
+test[,-58]<- predict(preprocessParams, test[,-58])
+```
+
+Split the data set to train and test the model
+
+```{r split}
+set.seed(37)
+trainIndex <- createDataPartition(train$classe, p = 0.63, list=FALSE)
+
+training <- train[trainIndex,]
+testing <- train[-trainIndex,]
+
+print(dim(training))
+print(dim(testing))
+```
+
+Perform 10 fold cross validation and tune SVM model to select the best fit. We get an estimated error of 0.009381124
+
+```{r tune, cache=TRUE}
+tuned <- tune.svm(classe ~ . , data=training, gamma = 10^-2, 
+                  cost = 10^2, tunecontrol=tune.control(cross=10))
+summary(tuned)
+tuned$performances
+svmfit <- tuned$best.model
+```
+
+Predict using test set and evaluate the model's performance. Here we see that out of sample error is close to the estimated one above
+
+```{r predict}
+tune.pred <- predict(svmfit, testing[, -58])
+confusionMatrix(tune.pred, testing$classe)
+```
